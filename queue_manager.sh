@@ -1,141 +1,104 @@
-#!/bin/bash
-#
-# queue_manager.sh  — despacha trabajos GPU y vigila runners colgados
+#!/usr/bin/env bash
+# -----------------------------------------------------------------------------
+# queue_manager.sh — despacha trabajos 1..N GPUs y vigila runners colgados
+# -----------------------------------------------------------------------------
+set -euo pipefail
 
-# ------------ Configuración ------------
+# --- Config ------------------------------------------------------------------
 QUEUE_ROOT="./dam/queue_jobs"
-STALE_MINUTES=2          # .ready sin tocar > 30 min ⇒ marcar failed
-SLEEP_IDLE=5              # seg. entre iteraciones si la cola está vacía
-# ------------ Fin config ---------------
+RUNTIME="$QUEUE_ROOT/runtime"
+LOCK="$RUNTIME/.manager.lock"
+QUEUE="$RUNTIME/queue_state.txt"
+GPU_JSON="$RUNTIME/gpu_status.json"
+STALE_MINUTES=2
+SLEEP_IDLE=5
+# -----------------------------------------------------------------------------
 
-RUNTIME_DIR="$QUEUE_ROOT/runtime"
-PENDING_DIR="$QUEUE_ROOT/pending"
-FAILED_DIR="$QUEUE_ROOT/failed"
-LOCK_FILE="$RUNTIME_DIR/.manager.lock"
-QUEUE_FILE="$RUNTIME_DIR/queue_state.txt"
-GPU_STATUS_FILE="$RUNTIME_DIR/gpu_status.json"
+mkdir -p "$RUNTIME"
 
-mkdir -p "$RUNTIME_DIR" "$FAILED_DIR"
+[ -e "$LOCK" ] && { echo "Ya hay un manager activo."; exit 1; }
+touch "$LOCK"
+trap 'rm -f "$LOCK"; exit 0' SIGINT SIGTERM EXIT
 
-cleanup() {
-  echo "Queue manager shutting down…"
-  rm -f "$LOCK_FILE"
-  exit 0
-}
-trap cleanup SIGINT SIGTERM EXIT
+TOTAL_GPUS=$(jq length "$GPU_JSON")
+echo "🖥️  Manager iniciado. GPUs detectadas: $TOTAL_GPUS"
 
-if [ -f "$LOCK_FILE" ]; then
-  echo "Error: queue_manager already running (lock file exists)."
-  exit 1
-fi
-touch "$LOCK_FILE"
-
-# ---------- Funciones util ----------
-release_job_gpus () {
-  local job_id="$1"
-  python3 - <<PY
-import json, os, sys
-f, jid = "$GPU_STATUS_FILE", "$job_id"
-if not os.path.exists(f): sys.exit()
-with open(f) as j: status = json.load(j)
-changed = False
-for gpu, owner in status.items():
-    if owner == jid:
-        status[gpu] = None
-        changed = True
-if changed:
-    with open(f, "w") as j: json.dump(status, j, indent=2)
+# ---------- utilidades -------------------------------------------------------
+release_gpus() {  # $1=JOB_ID
+python3 - <<PY
+import json, sys, os
+f="$GPU_JSON"; jid="$1"
+with open(f) as j: s=json.load(j)
+for g in s:
+    if s[g]==jid: s[g]=None
+with open(f,"w") as j: json.dump(s,j,indent=2)
 PY
 }
 
-fail_job () {
-  local job_id="$1"
-  local username
-  username=$(echo "$job_id" | cut -d'_' -f1)
-  if [ -d "$PENDING_DIR/$username/$job_id" ]; then
-      mkdir -p "$FAILED_DIR/$username"
-      mv "$PENDING_DIR/$username/$job_id" "$FAILED_DIR/$username/"
-      echo "→ Moved $job_id to failed/"
-  fi
+fail_job() {  # $1=JOB_ID
+  user=${1%%_*}
+  [ -d "$QUEUE_ROOT/pending/$user/$1" ] || return
+  mkdir -p "$QUEUE_ROOT/failed/$user"
+  mv "$QUEUE_ROOT/pending/$user/$1" "$QUEUE_ROOT/failed/$user/"
 }
 
-check_stale_ready () {
-  local stale
-  while IFS= read -r -d '' stale; do
-      local job_id
-      job_id=$(basename "$stale" .ready)
-      echo "⚠️  Stale job detected: $job_id (>$STALE_MINUTES min). Cleaning…"
-      release_job_gpus "$job_id"
-      fail_job "$job_id"
-      rm -f "$stale"
-      sed -i "/^${job_id}:/d" "$QUEUE_FILE"
-  done < <(find "$RUNTIME_DIR" -name "*.ready" -mmin +$STALE_MINUTES -print0)
-}
-
-startup_recovery () {
-  echo "Startup recovery…"
-  for rf in "$RUNTIME_DIR"/*.ready; do
-      [ -e "$rf" ] || continue
-      job_id=$(basename "$rf" .ready)
-      echo "Recovering stale job $job_id"
-      release_job_gpus "$job_id"
-      fail_job "$job_id"
-      rm -f "$rf"
-      sed -i "/^${job_id}:/d" "$QUEUE_FILE"
+startup_recovery() {
+  echo "→ Recovery..."
+  for f in "$RUNTIME"/*.ready; do
+    [ -e "$f" ] || continue
+    jid=$(basename "$f" .ready)
+    release_gpus "$jid"
+    fail_job "$jid"
+    rm -f "$f"
+    sed -i "/^${jid}:/d" "$QUEUE"
+    echo "  Recup $jid"
   done
-  echo "Recovery complete."
 }
-# --------------------------------------
-
 startup_recovery
-echo "✅ Queue manager running. Monitoring $QUEUE_FILE"
+# -----------------------------------------------------------------------------
+
 
 while true; do
-    # 1) Limpieza watchdog
-    check_stale_ready
+  # 1· Limpiar .ready sin latido
+  while IFS= read -r -d '' f; do
+      jid=$(basename "$f" .ready)
+      echo "⚠️  Stale $jid (>${STALE_MINUTES}m). Cleanup."
+      release_gpus "$jid"; fail_job "$jid"; rm -f "$f"
+      sed -i "/^${jid}:/d" "$QUEUE"
+  done < <(find "$RUNTIME" -name '*.ready' -mmin +"$STALE_MINUTES" -print0)
 
-    # 2) Si la cola está vacía, dormimos
-    if [ ! -s "$QUEUE_FILE" ]; then
-        sleep "$SLEEP_IDLE"
-        continue
-    fi
+  # 2· Cola vacía
+  [ ! -s "$QUEUE" ] && { sleep "$SLEEP_IDLE"; continue; }
 
-    # 3) Leemos la PRIMERA línea
-    IFS=: read -r JOB_ID REQUESTED_GPUS < <(head -n 1 "$QUEUE_FILE")
+  # 3· Leer primera línea
+  IFS=: read -r JID REQ < <(head -n 1 "$QUEUE")
+  if ! [[ "$REQ" =~ ^[0-9]+$ ]] || [ "$REQ" -lt 1 ] || [ "$REQ" -gt "$TOTAL_GPUS" ]; then
+      echo "⚠️  Entrada inválida: $JID:$REQ"
+      tail -n +2 "$QUEUE" > "$QUEUE.tmp" && mv "$QUEUE.tmp" "$QUEUE"
+      continue
+  fi
 
-    # Validación rápida
-    [[ -z "$JOB_ID" || ! "$REQUESTED_GPUS" =~ ^[1-2]$ ]] && {
-        echo "⚠️  Invalid line '$JOB_ID:$REQUESTED_GPUS' → drop"
-        tail -n +2 "$QUEUE_FILE" > "$QUEUE_FILE.tmp" && mv "$QUEUE_FILE.tmp" "$QUEUE_FILE"
-        continue
-    }
-
-    # 4) ¿Hay GPUs libres suficientes?
-    AVAILABLE_GPUS=$(python3 - <<PY
-import json, os
-f="$GPU_STATUS_FILE"; req=int("$REQUESTED_GPUS")
-with open(f) as j: s=json.load(j)
+  # 4· GPUs libres suficientes?
+  FREE=$(python3 - <<PY
+import json, sys
+req=int("$REQ")
+with open("$GPU_JSON") as j: s=json.load(j)
 free=[g for g,v in s.items() if v is None]
 print(",".join(free[:req]) if len(free)>=req else "", end="")
 PY
 )
-    [ -z "$AVAILABLE_GPUS" ] && { sleep 2; continue; }
+  [ -z "$FREE" ] && { sleep 1; continue; }
 
-    echo "Dispatching $JOB_ID → GPU(s) $AVAILABLE_GPUS"
-
-    # 5) Reservamos GPUs
-    python3 - <<PY
+  echo "🚀  Dispatch $JID → [$FREE]"
+  # 5· Reservar
+python3 - <<PY
 import json, os
-f="$GPU_STATUS_FILE"; jid="$JOB_ID"; gpus="$AVAILABLE_GPUS".split(',')
-with open(f) as j: s=json.load(j)
+jid="$JID"; gpus="$FREE".split(',')
+with open("$GPU_JSON") as j: s=json.load(j)
 for g in gpus: s[g]=jid
-with open(f,"w") as j: json.dump(s,j,indent=2)
+with open("$GPU_JSON","w") as j: json.dump(s,j,indent=2)
 PY
 
-    # 6) Creamos .ready y DESENCOLAMOS ya
-    echo "$AVAILABLE_GPUS" > "$RUNTIME_DIR/${JOB_ID}.ready"
-    tail -n +2 "$QUEUE_FILE" > "$QUEUE_FILE.tmp" && mv "$QUEUE_FILE.tmp" "$QUEUE_FILE"
-
-    # 7) Iteración inmediata: así podemos despachar más trabajos sin esperar
+  echo "$FREE" > "$RUNTIME/${JID}.ready"
+  tail -n +2 "$QUEUE" > "$QUEUE.tmp" && mv "$QUEUE.tmp" "$QUEUE"
 done
-
