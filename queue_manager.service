@@ -1,0 +1,16 @@
+[Unit]
+Description=GPU Job Queue Manager
+After=network.target
+
+[Service]
+Type=simple
+# IMPORTANT: Replace 'BiDA' with the username that should run the manager
+# This user needs read/write access to the queue_jobs directory.
+User=BiDA
+# IMPORTANT: Update this path to the location of your script
+ExecStart=/bin/bash /home/linuxbida/Escritorio/VBoxTools/queue_jobs/scripts/queue_manager.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
