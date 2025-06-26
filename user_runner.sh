@@ -1,107 +1,109 @@
 #!/usr/bin/env bash
-# -----------------------------------------------------------------------------
-# user_runner.sh  — envía un trabajo a la cola y lo ejecuta cuando haya GPU(s)
-# -----------------------------------------------------------------------------
+# user_runner.sh — enqueue & run, supports --priority and checkpoint resume
 set -euo pipefail
 
-QUEUE_ROOT="./dam/queue_jobs"
-HEARTBEAT_SECS=30
+# -------- parse args ----------------------------------------------------------
+PRIORITY="normal"          # high | normal | low
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --gpus)     NUM_GPUS="$2"; shift 2 ;;
+    --priority) PRIORITY="$2"; shift 2 ;;
+    *)          SCRIPT_PATH="$1"; shift ;;
+  esac
+done
 
-# --- Parseo de argumentos ----------------------------------------------------
-if [[ "${1-}" == "--gpus" && -n "${2-}" ]]; then
-    NUM_GPUS="$2"; shift 2
-else
-    echo "Uso: $0 --gpus <1-N> /ruta/a/script.py"; exit 1
-fi
-SCRIPT_PATH=$(realpath "$1") || exit 1
-[[ -f "$SCRIPT_PATH" ]] || { echo "Error: no existe $SCRIPT_PATH"; exit 1; }
+[[ -z "${NUM_GPUS:-}" || -z "${SCRIPT_PATH:-}" ]] && {
+  echo "Uso: $0 --gpus <1-N> [--priority high|normal|low] script.py"; exit 1; }
 
+SCRIPT_PATH=$(realpath "$SCRIPT_PATH")
 TOTAL_GPUS=$(nvidia-smi --list-gpus | wc -l)
-if ! [[ "$NUM_GPUS" =~ ^[0-9]+$ ]] || [ "$NUM_GPUS" -lt 1 ] || [ "$NUM_GPUS" -gt "$TOTAL_GPUS" ]; then
-    echo "Error: --gpus debe estar entre 1 y $TOTAL_GPUS"; exit 1
-fi
+[[ $NUM_GPUS =~ ^[0-9]+$ ]] && (( NUM_GPUS>=1 && NUM_GPUS<=TOTAL_GPUS )) \
+  || { echo "❌ --gpus debe estar entre 1 y $TOTAL_GPUS"; exit 1; }
 
-# --- Rutas y Job-ID ----------------------------------------------------------
+case $PRIORITY in high) PRIO_NUM=1;; normal) PRIO_NUM=2;; low) PRIO_NUM=3;;
+  *) echo "❌ prioridad debe ser high|normal|low"; exit 1;; esac
+
+# -------- directories & job id -----------------------------------------------
+QUEUE_ROOT="./dam/queue_jobs"
+RUNTIME="$QUEUE_ROOT/runtime"
 USERNAME=$(whoami)
-TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-RAND=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c5)
-JOB_ID="${USERNAME}_${TIMESTAMP}_${RAND}"
+JOB_ID="${USERNAME}_$(date +%Y%m%d_%H%M%S)_$(tr -dc A-Za-z0-9 </dev/urandom | head -c5)"
 
 PENDING="$QUEUE_ROOT/pending/$USERNAME/$JOB_ID"
-RUNTIME="$QUEUE_ROOT/runtime"
 LOGDIR="$QUEUE_ROOT/logs"
-mkdir -p "$PENDING" "$LOGDIR"
-
+mkdir -p "$PENDING" "$LOGDIR" "$RUNTIME"
 ln -s "$SCRIPT_PATH" "$PENDING/$(basename "$SCRIPT_PATH")"
 
-echo -e "\e[1mJob submitted with ID: $JOB_ID\e[0m"
-echo "Job requires $NUM_GPUS GPU(s)."
+echo -e "📤 queued $JOB_ID (priority=$PRIORITY, $NUM_GPUS GPU)"
 
-echo "${JOB_ID}:${NUM_GPUS}" >> "$RUNTIME/queue_state.txt"
+echo "${JOB_ID}:${NUM_GPUS}:${PRIO_NUM}" >> "$RUNTIME/queue_state.txt"
 
-# --- Spinner mientras esperamos turno ---------------------------------------
+# -------- wait for .ready -----------------------------------------------------
 spin=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏); i=0
 until [ -f "$RUNTIME/${JOB_ID}.ready" ]; do
-    pos=$(grep -n "^${JOB_ID}:" "$RUNTIME/queue_state.txt" | cut -d: -f1)
-    printf "\r[%s] Waiting… position %s " "${spin[i]}" "${pos:-?}"; i=$(( (i+1)%10 ))
-    sleep 0.2
-done
-echo -e "\n\e[32m✅ It's your turn! Preparing...\e[0m"
+  pos=$(grep -n "^${JOB_ID}:" "$RUNTIME/queue_state.txt" | cut -d: -f1)
+  printf "\r[%s] waiting… position %s " "${spin[i]}" "${pos:-?}"
+  i=$(( (i+1)%10 )); sleep 0.2
+done; echo
 
-GPU_IDS=$(cat "$RUNTIME/${JOB_ID}.ready")
+GPU_IDS=$(<"$RUNTIME/${JOB_ID}.ready")
 export CUDA_VISIBLE_DEVICES="$GPU_IDS"
 READY_FILE="$RUNTIME/${JOB_ID}.ready"
-echo "Assigned GPU(s): $CUDA_VISIBLE_DEVICES"
+echo "🎬 starting on GPU(s): $CUDA_VISIBLE_DEVICES"
 
-# --- Heartbeat --------------------------------------------------------------
-( while true; do sleep "$HEARTBEAT_SECS"; [ -f "$READY_FILE" ] && touch "$READY_FILE" || exit 0; done ) & HB=$!
+# -------- heartbeat -----------------------------------------------------------
+HEARTBEAT_SECS=30
+( while true; do sleep $HEARTBEAT_SECS; [ -f "$READY_FILE" ] && touch "$READY_FILE" || exit 0; done ) & HB=$!
 
-# --- Limpieza segura (SIGINT/SIGTERM) ---------------------------------------
-cleanup() {
-    code=$1
-    kill "$HB" 2>/dev/null || true
-    rm -f "$READY_FILE"
-python3 - <<PY
-import json, os, sys
-f="$RUNTIME/gpu_status.json"; jid="$JOB_ID"
-if os.path.exists(f):
-  with open(f) as j: s=json.load(j)
-  for g in s:
-    if s[g]==jid: s[g]=None
-  with open(f,"w") as j: json.dump(s,j,indent=2)
+# -------- cleanup on interrupt ------------------------------------------------
+cleanup(){ code=$1
+  kill "$HB" 2>/dev/null || true
+  rm -f "$READY_FILE"
+  python3 - <<PY
+import json; f="$RUNTIME/gpu_status.json"; jid="$JOB_ID"
+st=json.load(open(f)); changed=False
+for g in st: 
+    if st[g]==jid: st[g]=None; changed=True
+changed and json.dump(st,open(f,"w"),indent=2)
 PY
-    mkdir -p "$QUEUE_ROOT/failed/$USERNAME"
-    mv "$PENDING" "$QUEUE_ROOT/failed/$USERNAME/" 2>/dev/null || true
-    echo -e "\n\e[31m❌ Job interrupted.\e[0m"
-    exit "$code"
+  mkdir -p "$QUEUE_ROOT/failed/$USERNAME"
+  mv "$PENDING" "$QUEUE_ROOT/failed/$USERNAME/" 2>/dev/null || true
+  echo -e "\n🔻 job interrupted"; exit "$code"
 }
 trap 'cleanup 130' SIGINT SIGTERM
 
-# --- Detectar conda env ------------------------------------------------------
-ENV=$(grep -m1 -i "^# *conda_env" "$SCRIPT_PATH" | sed -E 's/^# *conda_env:?[ ]*//')
-[[ -z "$ENV" ]] && { echo "Falta # conda_env en el script"; cleanup 1; }
-
+# -------- conda env detection -------------------------------------------------
+ENV=$(grep -m1 -i "^# *conda_env" "$SCRIPT_PATH" | sed -E 's/^# *conda_env:? *//') || true
 source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate "$ENV" || { echo "No existe env $ENV"; cleanup 1; }
+[ -n "$ENV" ] && conda activate "$ENV" || echo "(no conda env specified)"
 
-# --- Ejecución --------------------------------------------------------------
-stdbuf -oL python -u "$SCRIPT_PATH" 2>&1 | tee "$LOGDIR/${JOB_ID}.log" & CHILD=$!
-wait $CHILD; EXIT=$?
+# -------- run -----------------------------------------------------------------
+stdbuf -oL python -u "$SCRIPT_PATH" 2>&1 | tee "$LOGDIR/${JOB_ID}.log" &
+PID=$!; wait $PID; EXIT=$?
 
-conda deactivate
+[ -n "$ENV" ] && conda deactivate
 kill "$HB" 2>/dev/null || true
 rm -f "$READY_FILE"
 
+# -------- release GPUs --------------------------------------------------------
 python3 - <<PY
-import json, os
-f="$RUNTIME/gpu_status.json"; jid="$JOB_ID"
-with open(f) as j: s=json.load(j)
-for g in s:
-    if s[g]==jid: s[g]=None
-with open(f,"w") as j: json.dump(s,j,indent=2)
+import json; f="$RUNTIME/gpu_status.json"; jid="$JOB_ID"; st=json.load(open(f))
+for g in st: 
+    if st[g]==jid: st[g]=None
+json.dump(st, open(f,"w"), indent=2)
 PY
 
-DEST="$QUEUE_ROOT/$( [ $EXIT -eq 0 ] && echo done || echo failed)/$USERNAME"
-mkdir -p "$DEST"; mv "$PENDING" "$DEST/"
-echo -e "\e[32mJob finished with exit code $EXIT\e[0m"
+# -------- checkpoint / normal finish ------------------------------------------
+if [ $EXIT -eq 75 ]; then           # 75 = checkpoint code
+  echo "💾 checkpoint exit — re-enqueuing"
+  NEW_ID="${JOB_ID}_res"
+  mv "$PENDING" "$QUEUE_ROOT/pending/$USERNAME/$NEW_ID"
+  echo "${NEW_ID}:${NUM_GPUS}:${PRIO_NUM}" >> "$RUNTIME/queue_state.txt"
+  exit 0
+fi
+
+DEST=$([ $EXIT -eq 0 ] && echo done || echo failed)
+mkdir -p "$QUEUE_ROOT/$DEST/$USERNAME"
+mv "$PENDING" "$QUEUE_ROOT/$DEST/$USERNAME/"
+echo -e "✅ finished (exit $EXIT)"
 exit $EXIT
