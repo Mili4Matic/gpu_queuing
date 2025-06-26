@@ -1,21 +1,18 @@
-#!/bin/bash
-#
-# user_runner.sh — envía un trabajo a la cola GPU y lo ejecuta
+#!/usr/bin/env bash
+# user_runner.sh — sends a job and executes when the number of solicited GPUs are available
 
-# --- Configuración ----------------------------------------------------------
-QUEUE_ROOT="./dam/queue_jobs"
-HEARTBEAT_SECS=30         # cada cuánto se “toca” el .ready
-# ---------------------------------------------------------------------------
+# 0. Parameters
+if [[ "$1" == "--gpus" ]]; then NUM_GPUS="$2"; shift 2; else
+    echo "Uso: $0 --gpus <1-N> /ruta/tu_script.py"; exit 1; fi
 
-# ---------- Argument parsing ----------
-if [[ "$1" == "--gpus" ]]; then
-    NUM_GPUS="$2"; shift 2
-else
-    echo "Uso: $0 --gpus [1|2] /ruta/tu_script.py"; exit 1
-fi
-[[ "$NUM_GPUS" =~ ^[12]$ ]] || { echo "Error: --gpus debe ser 1 ó 2"; exit 1; }
 SCRIPT_PATH=$(realpath "$1") || exit 1
 [[ -f "$SCRIPT_PATH" ]] || { echo "Error: no existe $SCRIPT_PATH"; exit 1; }
+
+# 1. Detect GPU number
+TOTAL_GPUS=$(nvidia-smi --list-gpus | wc -l)
+if ! [[ "$NUM_GPUS" =~ ^[0-9]+$ ]] || [ "$NUM_GPUS" -lt 1 ] || [ "$NUM_GPUS" -gt "$TOTAL_GPUS" ]; then
+    echo "Error: --gpus debe ser 1-$TOTAL_GPUS"; exit 1
+fi
 
 # ---------- Rutas y Job-ID ----------
 SCRIPT_NAME=$(basename "$SCRIPT_PATH")
