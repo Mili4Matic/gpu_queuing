@@ -1,109 +1,109 @@
 #!/usr/bin/env bash
-# -----------------------------------------------------------------------------
-# queue_manager.sh — despacha trabajos 1..N GPUs y vigila runners colgados
-# -----------------------------------------------------------------------------
+# queue_manager.sh — priority FIFO scheduler + watchdog + startup-recovery
 set -euo pipefail
 
-# --- Config ------------------------------------------------------------------
+# ------------ paths & settings ------------------------------------------------
 QUEUE_ROOT="./dam/queue_jobs"
 RUNTIME="$QUEUE_ROOT/runtime"
 LOCK="$RUNTIME/.manager.lock"
-QUEUE="$RUNTIME/queue_state.txt"
-GPU_JSON="$RUNTIME/gpu_status.json"
-STALE_MINUTES=2
-SLEEP_IDLE=5
-# -----------------------------------------------------------------------------
+QUEUE_FILE="$RUNTIME/queue_state.txt"
+GPU_STATUS="$RUNTIME/gpu_status.json"
+
+STALE_MINUTES=2   # .ready sin latido ≥ 2 min  → limpieza
+SLEEP_IDLE=5      # seg. entre barridos si la cola está vacía
+# ------------------------------------------------------------------------------
 
 mkdir -p "$RUNTIME"
-
-[ -e "$LOCK" ] && { echo "Ya hay un manager activo."; exit 1; }
-touch "$LOCK"
-trap 'rm -f "$LOCK"; exit 0' SIGINT SIGTERM EXIT
+[ -e "$LOCK" ] && { echo "❌ manager already running"; exit 1; }
+touch "$LOCK"; trap 'rm -f "$LOCK"; exit 0' SIGINT SIGTERM EXIT
 
 TOTAL_GPUS=$(python3 - <<PY
+import json, sys; print(len(json.load(open("$GPU_STATUS"))))
+PY)
+echo "🖥️ manager up — $TOTAL_GPUS GPU(s) detected"
+
+# ---------- helpers -----------------------------------------------------------
+release_gpus() {  # $1 = JOB_ID
+python3 - "$1" "$GPU_STATUS" <<'PY'
 import json, sys, pathlib
-print(len(json.load(open("$GPU_JSON"))))
-PY
-)
-
-echo "🖥️  Manager iniciado. GPUs detectadas: $TOTAL_GPUS"
-
-# ---------- utilidades -------------------------------------------------------
-release_gpus() {  # $1=JOB_ID
-python3 - <<PY
-import json, sys, os
-f="$GPU_JSON"; jid="$1"
-with open(f) as j: s=json.load(j)
-for g in s:
-    if s[g]==jid: s[g]=None
-with open(f,"w") as j: json.dump(s,j,indent=2)
+jid, f = sys.argv[1], sys.argv[2]
+st = json.load(open(f))
+for g in st:
+    if st[g] == jid:
+        st[g] = None
+json.dump(st, open(f, "w"), indent=2)
 PY
 }
 
-fail_job() {  # $1=JOB_ID
-  user=${1%%_*}
+fail_job() {      # $1 = JOB_ID
+  user="${1%%_*}"
   [ -d "$QUEUE_ROOT/pending/$user/$1" ] || return
   mkdir -p "$QUEUE_ROOT/failed/$user"
-  mv "$QUEUE_ROOT/pending/$user/$1" "$QUEUE_ROOT/failed/$user/"
+  mv "$QUEUE_ROOT/pending/$user/$1" "$QUEUE_ROOT/failed/$user/" 2>/dev/null || true
 }
 
 startup_recovery() {
-  echo "→ Recovery..."
   for f in "$RUNTIME"/*.ready; do
     [ -e "$f" ] || continue
     jid=$(basename "$f" .ready)
-    release_gpus "$jid"
-    fail_job "$jid"
-    rm -f "$f"
-    sed -i "/^${jid}:/d" "$QUEUE"
-    echo "  Recup $jid"
+    echo "↻ recover $jid"
+    release_gpus "$jid"; fail_job "$jid"; rm -f "$f"
+    sed -i "/^${jid}:/d" "$QUEUE_FILE"
   done
 }
 startup_recovery
-# -----------------------------------------------------------------------------
-
+# ------------------------------------------------------------------------------
 
 while true; do
-  # 1· Limpiar .ready sin latido
-  while IFS= read -r -d '' f; do
-      jid=$(basename "$f" .ready)
-      echo "⚠️  Stale $jid (>${STALE_MINUTES}m). Cleanup."
-      release_gpus "$jid"; fail_job "$jid"; rm -f "$f"
-      sed -i "/^${jid}:/d" "$QUEUE"
+  # 1 Watch-dog — limpia runners colgados
+  while IFS= read -r -d '' rf; do
+    jid=$(basename "$rf" .ready)
+    echo "⚠️ stale $jid  (>${STALE_MINUTES} min) — cleaning"
+    release_gpus "$jid"; fail_job "$jid"
+    rm -f "$rf"; sed -i "/^${jid}:/d" "$QUEUE_FILE"
   done < <(find "$RUNTIME" -name '*.ready' -mmin +"$STALE_MINUTES" -print0)
 
-  # 2· Cola vacía
-  [ ! -s "$QUEUE" ] && { sleep "$SLEEP_IDLE"; continue; }
+  # 2 nada en cola
+  [ ! -s "$QUEUE_FILE" ] && { sleep "$SLEEP_IDLE"; continue; }
 
-  # 3· Leer primera línea
-  IFS=: read -r JID REQ < <(head -n 1 "$QUEUE")
-  if ! [[ "$REQ" =~ ^[0-9]+$ ]] || [ "$REQ" -lt 1 ] || [ "$REQ" -gt "$TOTAL_GPUS" ]; then
-      echo "⚠️  Entrada inválida: $JID:$REQ"
-      tail -n +2 "$QUEUE" > "$QUEUE.tmp" && mv "$QUEUE.tmp" "$QUEUE"
-      continue
-  fi
+  # 3 leer todas las líneas y elegir la de mayor prioridad que quepa
+  mapfile -t LINES < "$QUEUE_FILE"
+  PICK_IDX=-1; BEST_PRIO=99; FREE_GPUS=""
+  for idx in "${!LINES[@]}"; do
+    IFS=':' read -r jid req prio <<<"${LINES[$idx]}"
+    prio=${prio:-2}
+    [[ $req =~ ^[0-9]+$ ]] || continue
+    [[ $prio =~ ^[0-9]+$ ]] || prio=2
+    # ¿hay GPUs suficientes?
+    free=$(python3 - <<PY
+import json, sys, os
+req=int("$req")
+st=json.load(open("$GPU_STATUS"))
+avail=[g for g,v in st.items() if v is None]
+print(",".join(avail[:req]) if len(avail)>=req else "", end="")
+PY)
+    [ -z "$free" ] && continue
+    if (( prio < BEST_PRIO )); then
+      PICK_IDX=$idx; BEST_PRIO=$prio; FREE_GPUS=$free
+    fi
+  done
 
-  # 4· GPUs libres suficientes?
-  FREE=$(python3 - <<PY
+  # 4 si ninguno cabe
+  [ $PICK_IDX -lt 0 ] && { sleep 1; continue; }
+
+  IFS=':' read -r JID REQ PRIO <<<"${LINES[$PICK_IDX]}"
+  echo "🚀 dispatch $JID (p=$PRIO) → [$FREE_GPUS]"
+
+  # 5 reservar GPUs
+  python3 - <<PY
 import json, sys
-req=int("$REQ")
-with open("$GPU_JSON") as j: s=json.load(j)
-free=[g for g,v in s.items() if v is None]
-print(",".join(free[:req]) if len(free)>=req else "", end="")
-PY
-)
-  [ -z "$FREE" ] && { sleep 1; continue; }
-
-  echo "🚀  Dispatch $JID → [$FREE]"
-  # 5· Reservar
-python3 - <<PY
-import json, os
-jid="$JID"; gpus="$FREE".split(',')
-with open("$GPU_JSON") as j: s=json.load(j)
-for g in gpus: s[g]=jid
-with open("$GPU_JSON","w") as j: json.dump(s,j,indent=2)
+jid="$JID"; gpus="$FREE_GPUS".split(',')
+st=json.load(open("$GPU_STATUS"))
+for g in gpus: st[g]=jid
+json.dump(st, open("$GPU_STATUS","w"), indent=2)
 PY
 
-  echo "$FREE" > "$RUNTIME/${JID}.ready"
-  tail -n +2 "$QUEUE" > "$QUEUE.tmp" && mv "$QUEUE.tmp" "$QUEUE"
+  # 6 ready + desencolar
+  echo "$FREE_GPUS" > "$RUNTIME/${JID}.ready"
+  sed -i "$((PICK_IDX+1))d" "$QUEUE_FILE"
 done
