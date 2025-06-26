@@ -1,104 +1,147 @@
 # GPU Job Queueing System
 
-A simple but robust system for managing and scheduling Python jobs on a shared server with multiple NVIDIA GPUs.
+A lightweight **Bash‑based scheduler** for running Python scripts on a shared machine with multiple NVIDIA GPUs. It provides fair queuing, robust resource isolation, automatic environment activation and self‑healing in case of crashes.
 
-## Features
+## Key Features
 
-- **Fair Queueing**: Jobs are executed in a First-In, First-Out (FIFO) order.
-- **Resource Isolation**: `CUDA_VISIBLE_DEVICES` is used to ensure a job can only access its assigned GPUs.
-- **Automatic Environment Management**: Automatically activates the conda environment specified in the Python script.
-- **Real-time Monitoring**: Users can see their position in the queue and view live job output.
-- **Robustness**: The system is designed to recover from unexpected shutdowns of the manager.
-- **Logging**: All job outputs are saved to log files for later inspection.
+* **Concurrent dispatch** – jobs start as soon as enough free GPUs exist; no unnecessary serial blocking.
+* **Fair FIFO queue** – first‑in‑first‑out order for jobs requesting the same amount of GPUs.
+* **Resource isolation with `CUDA_VISIBLE_DEVICES`** – every process sees only the GPUs assigned to it.
+* **Heartbeat + watchdog** – the runner touches a `.ready` file every *30 s*; the manager frees GPUs automatically if a heartbeat is missing for *≥ 2 min*.
+* **Graceful cancellation** – press `Ctrl‑C` in the runner to abort the job; GPUs are released and the job is moved to `failed/`.
+* **Automatic conda activation** – the runner reads `# conda_env: <name>` from the first line of your script and activates it.
+* **Crash recovery** – on start‑up the manager cleans up stale locks and frees GPUs that were left busy.
+* **Real‑time logs** – live output is streamed to your terminal and recorded under `dam/queue_jobs/logs/`.
+* **Portable** – zero external dependencies beyond Bash, Python ≥3.8 and NVIDIA drivers/CUDA.
+
+## Directory Layout
+
+```
+dam/queue_jobs/
+├── pending/            # staging area while a job waits
+├── done/               # successful jobs are moved here
+├── failed/             # jobs that exited with non‑zero code or were aborted
+├── logs/               # stdout/err of every job (rotated externally)
+└── runtime/
+    ├── queue_state.txt # the FIFO queue
+    ├── gpu_status.json # which job owns each GPU id
+    ├── *.ready         # per‑job control files touched by the heartbeat
+    └── .manager.lock   # prevents two managers from running
+```
 
 ## Installation
 
-1.  **Clone the Repository**:
-    Place all the scripts from this project into a directory on your server, for example:
-    `/home/linuxbida/Escritorio/VBoxTools/queue_jobs/scripts/`
+1. **Clone / copy** the repository to the server, e.g.
 
-2.  **Run the Installer**:
-    Navigate to the scripts directory and run the installer. This will create the necessary directory structure and initialize the system files.
+   ```bash
+   /opt/gpu_queue/
+   ```
 
-    ```bash
-    cd /home/linuxbida/Escritorio/VBoxTools/queue_jobs/scripts/
-    chmod +x *.sh
-    ./install.sh
-    ```
+2. **Run the installer**
 
-3.  **Add to PATH (Recommended)**:
-    For convenience, add the `scripts` directory to your users' `PATH` or create symlinks to the scripts in `/usr/local/bin`.
+   ```bash
+   cd /opt/gpu_queue
+   chmod +x *.sh
+   ./install.sh
+   ```
 
-    ```bash
-    # For a single user (add to ~/.bashrc or ~/.zshrc)
-    echo 'export PATH="/home/linuxbida/Escritorio/VBoxTools/queue_jobs/scripts:$PATH"' >> ~/.bashrc
-    source ~/.bashrc
+   This creates the `dam/queue_jobs/` tree and initialises `gpu_status.json` with one entry per GPU detected by `nvidia-smi`.
 
-    # Or for all users (as root)
-    sudo ln -s /home/linuxbida/Escritorio/VBoxTools/queue_jobs/scripts/user_runner.sh /usr/local/bin/run_gpu_job
-    sudo ln -s /home/linuxbida/Escritorio/VBoxTools/queue_jobs/scripts/queue_monitor.sh /usr/local/bin/show_gpu_queue
-    ```
+3. **Add scripts to your PATH (optional)**
 
-## Usage
+   ```bash
+   sudo ln -s /opt/gpu_queue/user_runner.sh  /usr/local/bin/run_gpu_job
+   sudo ln -s /opt/gpu_queue/queue_monitor.sh /usr/local/bin/show_gpu_queue
+   ```
 
-### 1. Prepare Your Python Script
+## Starting the Queue Manager
 
-Add a comment to the first line of your Python script specifying the conda environment to use.
+Launch the daemon once per host:
+
+### Quick & dirty
+
+```bash
+nohup /opt/gpu_queue/queue_manager.sh &
+```
+
+### Production (systemd)
+
+```bash
+sudo cp /opt/gpu_queue/queue_manager.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now queue_manager.service
+```
+
+Verify with `systemctl status queue_manager.service`.
+
+## Submitting a Job
+
+1. **Annotate the script**
 
 ```python
 # conda_env: my_pytorch_env
-import torch
-import time
-import os
-
-# ... rest of your script
+import torch, time
+...
 ```
 
-### 2. Submit a Job
-
-Use the `user_runner.sh` (or the symlink `run_gpu_job`) to submit your script to the queue.
+2. **Send to queue**
 
 ```bash
-# Request 1 GPU
-user_runner.sh --gpus 1 /path/to/your/script.py
-
-# Request 2 GPUs
-user_runner.sh --gpus 2 /path/to/your/script.py
+run_gpu_job --gpus 1 /path/to/script.py  # request 1 GPU
+run_gpu_job --gpus 2 /path/to/script.py  # request 2 GPUs
 ```
 
-The script will show you your position in the queue and wait. Once it's your turn, it will display the live output from your script. You can safely close the terminal; the job will continue running and its output will be saved in the `logs/` directory.
+The runner will:
 
-### 3. Monitor the Queue
+1. create a unique job id under `pending/<user>/`,
+2. append it to the queue,
+3. wait displaying a spinner and queue position,
+4. start as soon as GPUs are available,
+5. stream output and write `logs/<JOB_ID>.log`.
 
-Use `queue_monitor.sh` (or `show_gpu_queue`) to see the current status of the queue and GPU allocation.
+Press **Ctrl‑C** at any time to cancel; the job will be marked failed and resources freed.
+
+## Monitoring
 
 ```bash
-queue_monitor.sh
+show_gpu_queue                # textual snapshot
+tail -f dam/queue_jobs/logs/<JOB_ID>.log   # live log
 ```
 
-### 4. Starting the Queue Manager
+## Configuration knobs
 
-The `queue_manager.sh` script must be running in the background to process the queue.
+All tunables live at the top of the corresponding script:
 
-**Method 1: Using `nohup` (Simple)**
+| Script             | Variable         | Default | Meaning                                                |
+| ------------------ | ---------------- | ------- | ------------------------------------------------------ |
+| `queue_manager.sh` | `STALE_MINUTES`  | `2`     | time without heartbeat before a job is considered dead |
+|                    | `SLEEP_IDLE`     | `5`     | seconds to sleep when queue empty                      |
+| `user_runner.sh`   | `HEARTBEAT_SECS` | `30`    | interval between `touch` operations on `.ready`        |
+
+## Cancelling jobs without terminal
+
+If you lost the original shell, simply delete the `.ready` file:
 
 ```bash
-nohup /home/linuxbida/Escritorio/VBoxTools/queue_jobs/scripts/queue_manager.sh &
+rm dam/queue_jobs/runtime/<JOB_ID>.ready
 ```
 
-**Method 2: Using `systemd` (Recommended for production)**
+The watchdog will notice within two minutes and clean everything up.
 
-This ensures the manager restarts automatically if the server reboots.
+A CLI helper `queue_cancel.sh` is planned.
 
-```bash
-# Copy the service file
-sudo cp /home/linuxbida/Escritorio/VBoxTools/queue_jobs/scripts/queue_manager.service /etc/systemd/system/
+## Troubleshooting
 
-# Reload the systemd daemon, enable, and start the service
-sudo systemctl daemon-reload
-sudo systemctl enable queue_manager.service
-sudo systemctl start queue_manager.service
+| Symptom                                              | Likely cause / fix                                                              |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Job never starts, queue position stays “1”           | No free GPU with enough memory – check `nvidia-smi`.                            |
+| Job vanishes from queue, marked *failed* immediately | Your script exited with non‑zero code (see its `.log`).                         |
+| GPUs show as used but no process visible             | Manager stopped while job running → restart manager; it will recover in ≤2 min. |
 
-# Check its status
-sudo systemctl status queue_manager.service
-```
+## License
+
+MIT
+
+---
+
+*This README reflects the queue version with heartbeat support and automatic stale‑job cleanup.*
