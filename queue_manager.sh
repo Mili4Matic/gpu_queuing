@@ -20,7 +20,12 @@ mkdir -p "$RUNTIME"
 touch "$LOCK"
 trap 'rm -f "$LOCK"; exit 0' SIGINT SIGTERM EXIT
 
-TOTAL_GPUS=$(jq length "$GPU_JSON")
+TOTAL_GPUS=$(python3 - <<PY
+import json, sys, pathlib
+print(len(json.load(open("$GPU_JSON"))))
+PY
+)
+
 echo "🖥️  Manager iniciado. GPUs detectadas: $TOTAL_GPUS"
 
 # ---------- utilidades -------------------------------------------------------
