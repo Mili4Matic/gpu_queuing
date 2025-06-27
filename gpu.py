@@ -1,4 +1,4 @@
-# conda_env WASP
+# conda_env inswapper_gpu
 import torch
 import time
 

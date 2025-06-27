@@ -5,13 +5,13 @@
 set -euo pipefail
 
 # --- Config ------------------------------------------------------------------
-QUEUE_ROOT="./dam/queue_jobs"
+QUEUE_ROOT="./dam/queue_jobs" # Directorio raiz para el sistema de colas
 RUNTIME="$QUEUE_ROOT/runtime"
 LOCK="$RUNTIME/.manager.lock"
 QUEUE="$RUNTIME/queue_state.txt"
 GPU_JSON="$RUNTIME/gpu_status.json"
-STALE_MINUTES=2
-SLEEP_IDLE=5
+STALE_MINUTES=1 # Minutos sin heartbeat para considerar un trabajo colgado
+SLEEP_IDLE=5 
 # -----------------------------------------------------------------------------
 
 mkdir -p "$RUNTIME"
@@ -26,7 +26,7 @@ print(len(json.load(open("$GPU_JSON"))))
 PY
 )
 
-echo "🖥️  Manager iniciado. GPUs detectadas: $TOTAL_GPUS"
+echo "🖥️ Manager iniciado. GPUs detectadas: $TOTAL_GPUS"
 
 # ---------- utilidades -------------------------------------------------------
 release_gpus() {  # $1=JOB_ID
@@ -67,7 +67,7 @@ while true; do
   # 1· Limpiar .ready sin latido
   while IFS= read -r -d '' f; do
       jid=$(basename "$f" .ready)
-      echo "⚠️  Stale $jid (>${STALE_MINUTES}m). Cleanup."
+      echo "  Stale $jid (>${STALE_MINUTES}m). Proccess DEAD, QUEUE Cleanup."
       release_gpus "$jid"; fail_job "$jid"; rm -f "$f"
       sed -i "/^${jid}:/d" "$QUEUE"
   done < <(find "$RUNTIME" -name '*.ready' -mmin +"$STALE_MINUTES" -print0)
@@ -78,12 +78,12 @@ while true; do
   # 3· Leer primera línea
   IFS=: read -r JID REQ < <(head -n 1 "$QUEUE")
   if ! [[ "$REQ" =~ ^[0-9]+$ ]] || [ "$REQ" -lt 1 ] || [ "$REQ" -gt "$TOTAL_GPUS" ]; then
-      echo "⚠️  Entrada inválida: $JID:$REQ"
+      echo "  Entrada inválida: $JID:$REQ"
       tail -n +2 "$QUEUE" > "$QUEUE.tmp" && mv "$QUEUE.tmp" "$QUEUE"
       continue
   fi
 
-  # 4· GPUs libres suficientes?
+  # 4· GPUs libres
   FREE=$(python3 - <<PY
 import json, sys
 req=int("$REQ")
@@ -94,7 +94,7 @@ PY
 )
   [ -z "$FREE" ] && { sleep 1; continue; }
 
-  echo "🚀  Dispatch $JID → [$FREE]"
+  echo " Dispatch $JID → [$FREE]"
   # 5· Reservar
 python3 - <<PY
 import json, os
