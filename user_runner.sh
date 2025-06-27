@@ -46,12 +46,13 @@ until [ -f "$RUNTIME/${JOB_ID}.ready" ]; do
     printf "\r[%s] Waiting… position %s " "${spin[i]}" "${pos:-?}"; i=$(( (i+1)%10 ))
     sleep 0.2
 done
-echo -e "\n\e[32m✅ It's your turn! Preparing...\e[0m"
+
+echo -e "\n\e[32mIt's your turn! Preparing...\e[0m"
 
 GPU_IDS=$(cat "$RUNTIME/${JOB_ID}.ready")
 export CUDA_VISIBLE_DEVICES="$GPU_IDS"
 READY_FILE="$RUNTIME/${JOB_ID}.ready"
-echo "Assigned GPU(s): $CUDA_VISIBLE_DEVICES"
+echo "Assigned GPU(s) ID(s): $CUDA_VISIBLE_DEVICES"
 
 # --- Heartbeat --------------------------------------------------------------
 ( while true; do sleep "$HEARTBEAT_SECS"; [ -f "$READY_FILE" ] && touch "$READY_FILE" || exit 0; done ) & HB=$!
@@ -104,4 +105,9 @@ PY
 DEST="$QUEUE_ROOT/$( [ $EXIT -eq 0 ] && echo done || echo failed)/$USERNAME"
 mkdir -p "$DEST"; mv "$PENDING" "$DEST/"
 echo -e "\e[32mJob finished with exit code $EXIT\e[0m"
+if [ $EXIT -eq 0 ]; then
+    echo "Job completed successfully. Logs at: $LOGDIR/${JOB_ID}.log"
+else
+    echo "Job failed. Check logs at: $LOGDIR/${JOB_ID}.log"
+fi
 exit $EXIT

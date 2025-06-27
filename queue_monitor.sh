@@ -1,59 +1,56 @@
-#!/usr/bin/env bash
-# -----------------------------------------------------------------------------
-# queue_monitor.sh — muestra la cola GPU y resalta tus jobs (sin ETA ni PRIO)
-# -----------------------------------------------------------------------------
-set -euo pipefail
+#!/bin/bash
 
-QUEUE_ROOT="./dam/queue_jobs"
-RUNTIME="$QUEUE_ROOT/runtime"
-QUEUE_FILE="$RUNTIME/queue_state.txt"
-GPU_STATUS_FILE="$RUNTIME/gpu_status.json"
-USERNAME=$(whoami)
+# --- Configuration ---
+QUEUE_ROOT="/home/linuxbida/Escritorio/VBoxTools/queue_jobs"
+# --- End Configuration ---
 
-[[ -f "$QUEUE_FILE" ]] || { echo "No existe $QUEUE_FILE"; exit 1; }
+RUNTIME_DIR="$QUEUE_ROOT/runtime"
+QUEUE_FILE="$RUNTIME_DIR/queue_state.txt"
+GPU_STATUS_FILE="$RUNTIME_DIR/gpu_status.json"
 
-# Colores
-BOLD="\e[1m"; GREEN="\e[32m"; CYAN="\e[36m"; RESET="\e[0m"
+# Colors
+C_GREEN='\033[0;32m'
+C_YELLOW='\033[0;33m'
+C_RED='\033[0;31m'
+C_BLUE='\033[0;34m'
+C_NC='\033[0m' # No Color
 
-# Info GPUs
-TOTAL_GPUS=$(python3 - <<PY
-import json, sys
-print(len(json.load(open("$GPU_STATUS_FILE"))))
-PY)
-FREE_GPUS=$(python3 - <<PY
+# Use watch for continuous monitoring
+watch -n 2 -t -c "
+echo \"--- GPU Queue Monitor --- $(date) --- (Updates every 2s, press Ctrl+C to exit)\"
+echo \"\"
+
+# --- GPU Status ---
+echo -e \"${C_BLUE}GPU Status:${C_NC}\"
+if [ -f \"$GPU_STATUS_FILE\" ]; then
+    python3 -c \"
 import json
-print(sum(1 for v in json.load(open("$GPU_STATUS_FILE")).values() if v is None))
-PY)
+import os
+f = '$GPU_STATUS_FILE'
+colors = {'green': '\\033[0;32m', 'yellow': '\\033[0;33m', 'nc': '\\033[0m'}
+if not os.path.exists(f): exit()
+with open(f, 'r') as j:
+    status = json.load(j)
+output = []
+for gpu, job in sorted(status.items()):
+    if job is None:
+        output.append(f\\\"{colors['green']}GPU {gpu}: FREE{colors['nc']}\\\")
+    else:
+        output.append(f\\\"{colors['yellow']}GPU {gpu}: USED by {job}{colors['nc']}\\\")
+print(' | '.join(output))
+\"
+else
+    echo -e \"${C_RED}GPU status file not found!${C_NC}\"
+fi
+echo \"\"
 
-echo -e "\nGPU total: $TOTAL_GPUS  libres: $FREE_GPUS\n"
-
-printf "%-3s %-38s %-5s %-6s\n" "#" "JOB_ID" "GPUs" "USER"
-printf "%-3s %-38s %-5s %-6s\n" "--" "--------------------------------------" "-----" "------"
-
-line=0
-while IFS=: read -r jid req _; do   # ignoramos campos extra como prioridad
-  [[ -z "$jid" || -z "$req" ]] && continue   # línea malformada
-  user=${jid%%_*}
-  line=$((line+1))
-  if [ "$user" = "$USERNAME" ]; then
-    printf "${BOLD}${GREEN}%-3s %-38s %-5s %-6s${RESET}\n" \
-           "$line" "${jid:0:38}" "$req" "$user"
-  else
-    printf "%-3s %-38s %-5s %-6s\n" \
-           "$line" "${jid:0:38}" "$req" "$user"
-  fi
-done < "$QUEUE_FILE"
-
-# Jobs en ejecución
-printf "\n${CYAN}RUNNING:${RESET}\n"
-found=0
-for rf in "$RUNTIME"/*.ready; do
-  [ -e "$rf" ] || continue
-  found=1
-  jid=$(basename "$rf" .ready)
-  gpus=$(<"$rf")
-  user=${jid%%_*}
-  if [ "$user" = "$USERNAME" ]; then c="${GREEN}${BOLD}"; else c=""; fi
-  printf "${c}%s -> [%s]${RESET}\n" "$jid" "$gpus"
-done
-[ $found -eq 0 ] && echo "(sin jobs en ejecución)"
+# --- Job Queue ---
+echo -e \"${C_BLUE}Pending Jobs:${C_NC}\"
+if [ -s \"$QUEUE_FILE\" ]; then
+    echo -e \"Position  |  Job ID                               |  GPUs Req.\"
+    echo \"--------------------------------------------------------------------\"
+    nl -w10 -s'  |  ' \"$QUEUE_FILE\" | sed 's/:/  |  /'
+else
+    echo \"Queue is empty.\"
+fi
+"
