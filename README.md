@@ -51,9 +51,10 @@ opt/queue_jobs/
 3. **Add scripts to your PATH (optional)**
 
    ```bash
-   sudo ln -s /opt/gpu_queue/user_runner.sh  /usr/local/bin/run_gpu_job
-   sudo ln -s /opt/gpu_queue/queue_monitor.sh /usr/local/bin/show_gpu_queue
+   sudo ./wrap_installer.sh
    ```
+   Make sure that you have already runned ./install.sh, and routes on wrap_installer.sh are correct.
+   This should enable all users on the system to add scripts to the queue using `gpurunner` and monitor the queue with `gpuqueue`
 
 ## Starting the Queue Manager
 
