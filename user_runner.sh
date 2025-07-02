@@ -71,9 +71,10 @@ if os.path.exists(f):
     if s[g]==jid: s[g]=None
   with open(f,"w") as j: json.dump(s,j,indent=2)
 PY
-    mkdir -p "$QUEUE_ROOT/failed/$USERNAME"
-    mv "$PENDING" "$QUEUE_ROOT/failed/$USERNAME/" 2>/dev/null || true
-    echo -e "\n\e[31mJob interrupted.\e[0m"
+    FAILED_DIR="$QUEUE_ROOT/failed/$USERNAME"
+    mkdir -p "$FAILED_DIR"
+    mv "$PENDING" "$FAILED_DIR/" 2>/dev/null || true
+    echo -e "\n\e[31m Job interrupted.\e[0m"
     exit "$code"
 }
 trap 'cleanup 130' SIGINT SIGTERM
@@ -102,8 +103,14 @@ for g in s:
 with open(f,"w") as j: json.dump(s,j,indent=2)
 PY
 
-DEST="$QUEUE_ROOT/$( [ $EXIT -eq 0 ] && echo done || echo failed)/$USERNAME"
-mkdir -p "$DEST"; mv "$PENDING" "$DEST/"
+if [ $EXIT -eq 0 ]; then
+    DEST_DIR="$QUEUE_ROOT/done/$USERNAME"
+else
+    DEST_DIR="$QUEUE_ROOT/failed/$USERNAME"
+fi
+mkdir -p "$DEST_DIR"
+mv "$PENDING" "$DEST_DIR/"
+
 echo -e "\e[32mJob finished with exit code $EXIT\e[0m"
 if [ $EXIT -eq 0 ]; then
     echo "Job completed successfully. Logs at: $LOGDIR/${JOB_ID}.log"
