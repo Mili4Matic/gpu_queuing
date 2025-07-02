@@ -6,6 +6,8 @@
 # Uso:
 #   sudo ./install_wrappers.sh /ruta/a/tu/proyecto
 #   (si omites la ruta, asume el directorio actual)
+# Instrucciones para eliminar de la ruta en caso de error o desuso del sistema
+# en el final de este archivo
 # ---------------------------------------------------------------------------
 
 set -euo pipefail
@@ -42,3 +44,14 @@ COMP
 
 echo "ℹ️  Abre una nueva terminal o haz 'hash -r' para refrescar el PATH."
 
+##########################################################################
+# 1. Elimina los wrappers                                                #
+# sudo rm -f /usr/local/bin/gpurunner                                    #
+# sudo rm -f /usr/local/bin/gpuqueue                                     #
+#                                                                        #
+# 2. (Opcional) quita el autocompletado que añadio                       #
+# sudo rm -f /etc/bash_completion.d/gpurunner                            #
+#                                                                        #
+# 3. Borra de la cache de tu shell los ejecutables que ya no existen     #
+# hash -r        # en Bash                                               #
+##########################################################################
