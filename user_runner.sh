@@ -73,7 +73,7 @@ if os.path.exists(f):
 PY
     mkdir -p "$QUEUE_ROOT/failed/$USERNAME"
     mv "$PENDING" "$QUEUE_ROOT/failed/$USERNAME/" 2>/dev/null || true
-    echo -e "\n\e[31m❌ Job interrupted.\e[0m"
+    echo -e "\n\e[31mJob interrupted.\e[0m"
     exit "$code"
 }
 trap 'cleanup 130' SIGINT SIGTERM
