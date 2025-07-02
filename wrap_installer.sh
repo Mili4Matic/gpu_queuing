@@ -18,7 +18,7 @@ MONITOR="$PROJECT_DIR/queue_monitor.sh"
 
 # Comprobaciones básicas
 for f in "$RUNNER" "$MONITOR"; do
-  [[ -x "$f" ]] || { echo "❌ No se encontró o no es ejecutable: $f"; exit 1; }
+  [[ -x "$f" ]] || { echo "No se encontró o no es ejecutable: $f"; exit 1; }
 done
 
 # Instalar / actualizar wrappers
@@ -34,7 +34,7 @@ exec /opt/gpu_queue/queue_monitor.sh "$@"
 WRAP
 ) /usr/local/bin/gpuqueue
 
-echo "✅ Creado gpurunner y gpuqueue en /usr/local/bin"
+echo "Creado gpurunner y gpuqueue en /usr/local/bin"
 
 # Opcional: autocompletado básico para bash
 cat >/etc/bash_completion.d/gpurunner <<'COMP'
@@ -42,7 +42,7 @@ _gpurunner_complete() { COMPREPLY=(); }
 complete -F _gpurunner_complete gpurunner
 COMP
 
-echo "ℹ️  Abre una nueva terminal o haz 'hash -r' para refrescar el PATH."
+echo "Abre una nueva terminal o haz 'hash -r' para refrescar el PATH."
 
 ##########################################################################
 # 1. Elimina los wrappers                                                #
