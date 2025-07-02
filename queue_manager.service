@@ -1,3 +1,31 @@
+# Instalation
+# Adjust the route to the location od the .service file
+# sudo cp /opt/gpu_queue/queue_manager.service /etc/systemd/system/
+#
+# Adjust route on [Service] (example):
+# [Service]
+# ExecStart=/opt/gpu_queue/queue_manager.sh
+#
+# Systemd reload and startup on boot enable
+# sudo systemctl daemon-reload        # updates new unit
+# sudo systemctl enable  queue_manager.service   # startup on boot
+# sudo systemctl start   queue_manager.service   # startup
+#
+# Check status
+# sudo systemctl status queue_manager.service
+#
+# Disabling autostartup
+# Stop and disabling the service
+# sudo systemctl stop    queue_manager.service
+# sudo systemctl disable queue_manager.service
+# 
+# (Optional) Deleting file on system services
+# sudo rm /etc/systemd/system/queue_manager.service
+# sudo systemctl daemon-reload   # limpiar caché de systemd
+#
+# Check if it still exists
+# systemctl list-unit-files | grep queue_manager   # output should be none
+
 [Unit]
 Description=GPU Job Queue Manager
 After=network.target
