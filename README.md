@@ -54,7 +54,7 @@ opt/queue_jobs/
    sudo ./wrap_installer.sh
    ```
    Make sure that you have already runned ./install.sh, and routes on wrap_installer.sh are correct.
-   This should enable all users on the system to add scripts to the queue using `gpurunner` and monitor the queue with `gpuqueue`
+   This should enable all users on the system to add scripts to the queue using `gpurunner` and monitor the queue with `gpuqueue`.
 
 ## Starting the Queue Manager
 
