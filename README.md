@@ -11,13 +11,14 @@ A lightweight **Bash‑based scheduler** for running Python scripts on a shared 
 * **Graceful cancellation** – press `Ctrl‑C` in the runner to abort the job; GPUs are released and the job is moved to `failed/`.
 * **Automatic conda activation** – the runner reads `# conda_env: <name>` from the first line of your script and activates it.
 * **Crash recovery** – on start‑up the manager cleans up stale locks and frees GPUs that were left busy.
-* **Real‑time logs** – live output is streamed to your terminal and recorded under `dam/queue_jobs/logs/`.
+* **Real‑time logs** – live output is streamed to your terminal and recorded under `opt/queue_jobs/logs/`.
+Also includes a 'queue_monitor.sh' where the user can monitor live queue state
 * **Portable** – zero external dependencies beyond Bash, Python ≥3.8 and NVIDIA drivers/CUDA.
 
 ## Directory Layout
 
 ```
-dam/queue_jobs/
+opt/queue_jobs/
 ├── pending/            # staging area while a job waits
 ├── done/               # successful jobs are moved here
 ├── failed/             # jobs that exited with non‑zero code or were aborted
@@ -45,7 +46,7 @@ dam/queue_jobs/
    ./install.sh
    ```
 
-   This creates the `dam/queue_jobs/` tree and initialises `gpu_status.json` with one entry per GPU detected by `nvidia-smi`.
+   This creates the `opts/queue_jobs/` tree and initialises `gpu_status.json` with one entry per GPU detected by `nvidia-smi`.
 
 3. **Add scripts to your PATH (optional)**
 
@@ -79,7 +80,7 @@ Verify with `systemctl status queue_manager.service`.
 1. **Annotate the script**
 
 ```python
-# conda_env: my_pytorch_env
+# conda_env my_env
 import torch, time
 ...
 ```
@@ -114,7 +115,7 @@ All tunables live at the top of the corresponding script:
 
 | Script             | Variable         | Default | Meaning                                                |
 | ------------------ | ---------------- | ------- | ------------------------------------------------------ |
-| `queue_manager.sh` | `STALE_MINUTES`  | `2`     | time without heartbeat before a job is considered dead |
+| `queue_manager.sh` | `STALE_MINUTES`  | `1`     | time without heartbeat before a job is considered dead |
 |                    | `SLEEP_IDLE`     | `5`     | seconds to sleep when queue empty                      |
 | `user_runner.sh`   | `HEARTBEAT_SECS` | `30`    | interval between `touch` operations on `.ready`        |
 
@@ -123,7 +124,7 @@ All tunables live at the top of the corresponding script:
 If you lost the original shell, simply delete the `.ready` file:
 
 ```bash
-rm dam/queue_jobs/runtime/<JOB_ID>.ready
+rm opt/queue_jobs/runtime/<JOB_ID>.ready
 ```
 
 The watchdog will notice within two minutes and clean everything up.

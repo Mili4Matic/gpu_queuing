@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# queue_monitor.sh — muestra la cola GPU y resalta tus jobs (sin ETA ni PRIO)
+# queue_monitor.sh — Muestra la cola para las GPU, numero de GPUs utilizadas y 
+# numero de GPUs solicitadas. Destacamos en verde trabajos del usuario que ejecuta
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
-QUEUE_ROOT="./dam/queue_jobs"
+QUEUE_ROOT="./opt/queue_jobs"
 RUNTIME="$QUEUE_ROOT/runtime"
 QUEUE_FILE="$RUNTIME/queue_state.txt"
 GPU_STATUS_FILE="$RUNTIME/gpu_status.json"
@@ -21,13 +22,15 @@ while true; do
     TOTAL_GPUS=$(python3 - <<PY
 import json, sys
 print(len(json.load(open("$GPU_STATUS_FILE"))))
-PY)
+PY
+)
     FREE_GPUS=$(python3 - <<PY
 import json
 print(sum(1 for v in json.load(open("$GPU_STATUS_FILE")).values() if v is None))
-PY)
+PY
+)
 
-    echo -e "\nGPU total: $TOTAL_GPUS  libres: $FREE_GPUS\n"
+    echo -e "\nNumero de GPUs total: $TOTAL_GPUS | GPUs libres: $FREE_GPUS\n"
 
     printf "%-3s %-38s %-5s %-6s\n" "#" "JOB_ID" "GPUs" "USER"
     printf "%-3s %-38s %-5s %-6s\n" "--" "--------------------------------------" "-----" "------"
@@ -58,7 +61,7 @@ PY)
         if [ "$user" = "$USERNAME" ]; then c="${GREEN}${BOLD}"; else c=""; fi
         printf "${c}%s -> [%s]${RESET}\n" "$jid" "$gpus"
     done
-    [ $found -eq 0 ] && echo "(sin jobs en ejecución)"
+    [ $found -eq 0 ] && echo "(sin jobs en ejecucion)"
 
     sleep 2
 done

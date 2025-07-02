@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# queue_manager.sh — despacha trabajos 1..N GPUs y vigila runners colgados
+# queue_manager.sh — despacha y procesa trabajos con 1..N GPUs y vigila runners colgados
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
 # --- Config ------------------------------------------------------------------
-QUEUE_ROOT="./dam/queue_jobs" # Directorio raiz para el sistema de colas
+QUEUE_ROOT="./opt/queue_jobs" # Directorio raiz para el sistema de colas
 RUNTIME="$QUEUE_ROOT/runtime"
 LOCK="$RUNTIME/.manager.lock"
 QUEUE="$RUNTIME/queue_state.txt"
@@ -64,7 +64,7 @@ startup_recovery
 
 
 while true; do
-  # 1· Limpiar .ready sin latido
+  # 1 Limpiar .ready sin heartbeat
   while IFS= read -r -d '' f; do
       jid=$(basename "$f" .ready)
       echo "  Stale $jid (>${STALE_MINUTES}m). Proccess DEAD, QUEUE Cleanup."
@@ -72,10 +72,10 @@ while true; do
       sed -i "/^${jid}:/d" "$QUEUE"
   done < <(find "$RUNTIME" -name '*.ready' -mmin +"$STALE_MINUTES" -print0)
 
-  # 2· Cola vacía
+  # 2 Cola vacía
   [ ! -s "$QUEUE" ] && { sleep "$SLEEP_IDLE"; continue; }
 
-  # 3· Leer primera línea
+  # 3 Leer primera línea
   IFS=: read -r JID REQ < <(head -n 1 "$QUEUE")
   if ! [[ "$REQ" =~ ^[0-9]+$ ]] || [ "$REQ" -lt 1 ] || [ "$REQ" -gt "$TOTAL_GPUS" ]; then
       echo "  Entrada inválida: $JID:$REQ"
@@ -83,7 +83,7 @@ while true; do
       continue
   fi
 
-  # 4· GPUs libres
+  # 4 GPUs libres
   FREE=$(python3 - <<PY
 import json, sys
 req=int("$REQ")
@@ -95,7 +95,7 @@ PY
   [ -z "$FREE" ] && { sleep 1; continue; }
 
   echo " Dispatch $JID → [$FREE]"
-  # 5· Reservar
+  # 5 Reservar
 python3 - <<PY
 import json, os
 jid="$JID"; gpus="$FREE".split(',')

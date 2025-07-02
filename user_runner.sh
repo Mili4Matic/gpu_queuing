@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# user_runner.sh  — envía un trabajo a la cola y lo ejecuta cuando haya GPU(s)
+# user_runner.sh  — envía un trabajo a la cola y lo ejecuta cuando haya GPU(s) disponibles
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
-QUEUE_ROOT="./dam/queue_jobs"
+QUEUE_ROOT="./opt/queue_jobs"
 HEARTBEAT_SECS=30
 
 # --- Parseo de argumentos ----------------------------------------------------

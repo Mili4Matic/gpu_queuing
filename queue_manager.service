@@ -8,7 +8,7 @@ Type=simple
 # This user needs read/write access to the queue_jobs directory.
 User=BiDA
 # IMPORTANT: Update this path to the location of your script
-ExecStart=/bin/bash /home/linuxbida/Escritorio/VBoxTools/queue_jobs/scripts/queue_manager.sh
+ExecStart=/bin/bash /path/to/queue_manager.sh
 Restart=on-failure
 RestartSec=5
 
