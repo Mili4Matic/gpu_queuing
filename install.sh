@@ -9,6 +9,7 @@ QUEUE_ROOT="./opt/queue_jobs"
 RUNTIME_DIR="$QUEUE_ROOT/runtime"
 mkdir -p "$QUEUE_ROOT"/{pending,done,failed,logs} "$RUNTIME_DIR"
 
+# Si no detecta nvidia-smi, poner la ruta completa, se encuentra con command -v nvidia-smi
 # --- 2  Detectar GPUs con nvidia-smi ----------------------------------------
 TOTAL_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 if [ "$TOTAL_GPUS" -lt 1 ]; then
